@@ -1,0 +1,35 @@
+{
+  "id": "departures_v4",
+  "name": "Departures v4",
+  "author": "Adam",
+  "version": "1.3.0",
+  "description": "Multiple countdowns",
+  "icon": "clock",
+  "category": "utility",
+  "min_refresh_seconds": 60,
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "calendar_url": {
+        "type": "string",
+        "title": "ICS URL"
+      },
+      "timezone": {
+        "type": "string",
+        "title": "Timezone",
+        "default": "America/Los_Angeles"
+      },
+      "max_events": {
+        "type": "integer",
+        "title": "Max Events",
+        "default": 6
+      },
+      "refresh_seconds": {
+        "type": "integer",
+        "title": "Refresh Interval (seconds)",
+        "default": 300,
+        "minimum": 60
+      }
+    }
+  }
+}
