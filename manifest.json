@@ -1,9 +1,9 @@
 {
-  "id": "departures_v4",
-  "name": "Departures v4",
+  "id": "departures",
+  "name": "Departures",
   "author": "Adam",
-  "version": "1.3.0",
-  "description": "Multiple countdowns",
+  "version": "1.0.0",
+  "description": "Countdown to multiple events from public webcal feed",
   "icon": "clock",
   "category": "utility",
   "min_refresh_seconds": 60,
@@ -17,7 +17,7 @@
       "timezone": {
         "type": "string",
         "title": "Timezone",
-        "default": "America/Los_Angeles"
+        "default": "America/Anchorage"
       },
       "max_events": {
         "type": "integer",

@@ -10,11 +10,11 @@ class DeparturesPlugin(PluginBase):
         super().__init__(*args, **kwargs)
         self.logger = logging.getLogger(__name__)
         self.events = []
-        self.logger.info("LOG: Departures v1.3.0 __init__")
+        self.logger.info("LOG: Departures v1.0.0 __init__")
 
     @property
     def plugin_id(self):
-        return "departures_v4"
+        return "departures"
 
     async def fetch_data(self) -> bool:
         self.logger.info("LOG: fetch_data() starting")
