@@ -1,10 +1,10 @@
 {
   "id": "departures",
   "name": "Departures",
-  "author": "Adam",
   "version": "1.0.0",
-  "description": "Countdown to multiple events from public webcal feed",
-  "icon": "clock",
+  "description": "Departures-style board showing upcoming events from an iCalendar feed with per-event FLIGHT, STAY, and PAID status indicators.",
+  "author": "Adam",
+  "icon": "calendar-clock",
   "category": "utility",
   "min_refresh_seconds": 60,
   "settings_schema": {
@@ -12,24 +12,43 @@
     "properties": {
       "calendar_url": {
         "type": "string",
-        "title": "ICS URL"
+        "title": "iCalendar URL",
+        "description": "Public or private .ics feed URL. Supports https:// and webcal:// formats.",
+        "ui:widget": "password"
+      },
+      "lookback_days": {
+        "type": "integer",
+        "title": "Lookback Days",
+        "description": "Number of days in the past to still display an event (0 = today only)",
+        "default": 3,
+        "minimum": 0
       },
       "timezone": {
         "type": "string",
         "title": "Timezone",
-        "default": "America/Anchorage"
-      },
-      "max_events": {
-        "type": "integer",
-        "title": "Max Events",
-        "default": 6
+        "description": "Timezone for date comparison (e.g. America/New_York)",
+        "default": "UTC",
+        "ui:widget": "timezone"
       },
       "refresh_seconds": {
         "type": "integer",
         "title": "Refresh Interval (seconds)",
+        "description": "How often to re-fetch the calendar feed.",
         "default": 300,
         "minimum": 60
       }
+    },
+    "required": ["calendar_url"]
+  },
+  "variables": {
+    "auto_discover": true
+  },
+  "screenshots": [
+    {
+      "src": "docs/board-display.png",
+      "alt": "Departures displayed on a Vestaboard",
+      "caption": "Departures-board layout showing upcoming events with FLIGHT, STAY, and PAID indicators",
+      "primary": true
     }
-  }
+  ]
 }
