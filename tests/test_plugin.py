@@ -376,7 +376,7 @@ END:VCALENDAR"""
         assert result.data["event_0_days"] == "1D"
 
     def test_flight_time_past_shows_dprtd(self, sample_manifest, sample_config):
-        """Flight time in the past on event day → DPRTD."""
+        """Flight time in the past on event day → DPTD."""
         plugin = _make_plugin(sample_manifest, sample_config)
         # Event today, FLIGHT:10:18, but now is 12:00 — flight already departed
         now = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
@@ -385,31 +385,31 @@ END:VCALENDAR"""
                 with patch.object(DeparturesPlugin, "_get_now", return_value=now):
                     result = plugin.fetch_data()
 
-        assert result.data["event_0_days"] == "DPRTD"
+        assert result.data["event_0_days"] == "DPTD"
 
     # ------------------------------------------------------------------
     # STAY and PAID flags (remain boolean)
     # ------------------------------------------------------------------
 
     def test_stay_paid_parsing(self, sample_manifest, sample_config):
-        """STAY:yes PAID:yes → true; absent → false."""
+        """STAY:yes PAID:yes → green tile; absent → red tile."""
         plugin = _make_plugin(sample_manifest, sample_config)
         with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
         # Hawaii: STAY:yes PAID:yes
-        assert result.data["event_0_stay"] == "true"
-        assert result.data["event_0_paid"] == "true"
+        assert result.data["event_0_stay"] == _TILE_GREEN
+        assert result.data["event_0_paid"] == _TILE_GREEN
         # Austin: STAY:yes PAID:true
-        assert result.data["event_1_stay"] == "true"
-        assert result.data["event_1_paid"] == "true"
+        assert result.data["event_1_stay"] == _TILE_GREEN
+        assert result.data["event_1_paid"] == _TILE_GREEN
         # London: STAY absent PAID:1
-        assert result.data["event_2_stay"] == "false"
-        assert result.data["event_2_paid"] == "true"
+        assert result.data["event_2_stay"] == _TILE_RED
+        assert result.data["event_2_paid"] == _TILE_GREEN
 
     def test_missing_flags_default(self, sample_manifest, sample_config):
-        """No description → red tile for F, false for S and P."""
+        """No description → red tile for F, S, and P."""
         plugin = _make_plugin(sample_manifest, sample_config)
         with patch("requests.get", return_value=_mock_get(ICS_NO_FLAGS)):
             with _patch_time()[0], _patch_time()[1]:
@@ -417,8 +417,8 @@ END:VCALENDAR"""
 
         assert result.available is True
         assert result.data["event_0_f_char"] == _TILE_RED
-        assert result.data["event_0_stay"] == "false"
-        assert result.data["event_0_paid"] == "false"
+        assert result.data["event_0_stay"] == _TILE_RED
+        assert result.data["event_0_paid"] == _TILE_RED
 
     # ------------------------------------------------------------------
     # Lookback days
@@ -436,7 +436,7 @@ END:VCALENDAR"""
         assert result.data["event_count"] == 0
 
     def test_event_within_lookback_included(self, sample_manifest):
-        """May 6 is 3 days before May 9; within default lookback → shown as DPRTD."""
+        """May 6 is 3 days before May 9; within default lookback → shown as DPTD."""
         config = {"calendar_url": "https://example.com/calendar.ics", "timezone": "UTC"}
         plugin = _make_plugin(sample_manifest, config)
         with patch("requests.get", return_value=_mock_get(ICS_RECENT_PAST)):
@@ -444,7 +444,7 @@ END:VCALENDAR"""
                 result = plugin.fetch_data()
 
         assert result.data["event_count"] == 1
-        assert result.data["event_0_days"] == "DPRTD"
+        assert result.data["event_0_days"] == "DPTD"
 
     def test_custom_lookback_days(self, sample_manifest):
         """lookback_days=6 → May 4 (5 days past) is included."""
@@ -646,7 +646,7 @@ END:VCALENDAR"""
         assert _TILE_RED in result.formatted_lines[1]
 
     def test_formatted_lines_dprtd_for_past_flight(self, sample_manifest, sample_config):
-        """Flight time already passed → DPRTD in formatted_lines."""
+        """Flight time already passed → DEPARTED row with no FSP tiles."""
         plugin = _make_plugin(sample_manifest, sample_config)
         now = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
         with patch("requests.get", return_value=_mock_get(ICS_TODAY)):
@@ -654,18 +654,34 @@ END:VCALENDAR"""
                 with patch.object(DeparturesPlugin, "_get_now", return_value=now):
                     result = plugin.fetch_data()
 
-        assert "DPRTD" in result.formatted_lines[0]
+        row = result.formatted_lines[0]
+        assert "DEPARTED" in row
+        assert _TILE_GREEN not in row
+        assert _TILE_RED not in row
+
+    def test_departed_row_is_22_tiles(self, sample_manifest, sample_config):
+        """Departed row must be exactly 22 display tiles (color markers = 1 tile each)."""
+        plugin = _make_plugin(sample_manifest, sample_config)
+        now = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
+        with patch("requests.get", return_value=_mock_get(ICS_TODAY)):
+            with patch.object(DeparturesPlugin, "_get_today", return_value=TODAY):
+                with patch.object(DeparturesPlugin, "_get_now", return_value=now):
+                    result = plugin.fetch_data()
+
+        row = result.formatted_lines[0]
+        # No color markers in departed rows, so string length == tile count
+        assert len(row) == 22
 
     # ------------------------------------------------------------------
-    # Name truncation (now 12 chars)
+    # Name truncation (now 14 chars)
     # ------------------------------------------------------------------
 
-    def test_name_truncated_to_12_chars(self, sample_manifest, sample_config):
+    def test_name_truncated_to_14_chars(self, sample_manifest, sample_config):
         long_name_ics = """\
 BEGIN:VCALENDAR
 VERSION:2.0
 BEGIN:VEVENT
-SUMMARY:A Very Long Event Name That Exceeds Twelve Characters
+SUMMARY:A Very Long Event Name That Exceeds Fourteen Characters
 DTSTART;VALUE=DATE:20260520
 DESCRIPTION:STAY:no PAID:no
 END:VEVENT
@@ -675,7 +691,133 @@ END:VCALENDAR"""
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        assert len(result.data["event_0_name"]) <= 12
+        assert len(result.data["event_0_name"]) <= 14
+
+    # ------------------------------------------------------------------
+    # Cycling row variables
+    # ------------------------------------------------------------------
+
+    # 2026-05-09: cycling display tests
+    def test_row_1_present_on_first_fetch(self, sample_manifest, sample_config):
+        """First fetch always returns row_1."""
+        plugin = _make_plugin(sample_manifest, sample_config)
+        with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        assert "row_1" in result.data
+        assert result.data["row_1"] != ""
+
+    def test_single_row_page_starts_at_first_event(self, sample_manifest, sample_config):
+        """display_rows=1, page 0 → row_1 contains first event name."""
+        plugin = _make_plugin(sample_manifest, sample_config)
+        with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        assert "Hawaii" in result.data["row_1"]
+
+    def test_two_row_display(self, sample_manifest):
+        """display_rows=2 → row_1 and row_2 populated on first fetch."""
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "display_rows": 2,
+        }
+        plugin = _make_plugin(sample_manifest, config)
+        with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        assert "Hawaii" in result.data["row_1"]
+        assert "Austin" in result.data["row_2"]
+
+    def test_page_advances_after_cycle_seconds(self, sample_manifest, sample_config):
+        """After cycle_seconds elapses, page advances to next event."""
+        from datetime import timedelta
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "display_rows": 1,
+            "cycle_seconds": 60,
+        }
+        plugin = _make_plugin(sample_manifest, config)
+
+        # First fetch — page 0
+        with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
+            with _patch_time()[0], _patch_time()[1]:
+                result1 = plugin.fetch_data()
+
+        assert "Hawaii" in result1.data["row_1"]
+        assert result1.data["current_page"] == 1
+
+        # Simulate 61 seconds elapsed by backdating _cycle_last_advance
+        plugin._cycle_last_advance = datetime.now() - timedelta(seconds=61)
+
+        with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
+            with _patch_time()[0], _patch_time()[1]:
+                result2 = plugin.fetch_data()
+
+        assert result2.data["current_page"] == 2
+        assert "Austin" in result2.data["row_1"]
+
+    def test_empty_slot_when_last_page_is_partial(self, sample_manifest):
+        """3 events, display_rows=2 → page 2 has row_1 filled, row_2 empty."""
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "display_rows": 2,
+            "cycle_seconds": 30,
+        }
+        plugin = _make_plugin(sample_manifest, config)
+        # Force to page 1 (second page: event index 2 only)
+        plugin._cycle_page = 1
+        plugin._cycle_last_advance = datetime.now()
+
+        with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        assert "London" in result.data["row_1"]
+        assert result.data["row_2"] == ""
+
+    def test_total_pages_calculated_correctly(self, sample_manifest):
+        """5 events, display_rows=2 → 3 total pages."""
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "display_rows": 2,
+        }
+        plugin = _make_plugin(sample_manifest, config)
+        with patch("requests.get", return_value=_mock_get(ICS_FIVE_EVENTS)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        assert result.data["total_pages"] == 3
+
+    def test_page_wraps_around(self, sample_manifest, sample_config):
+        """After last page, cycling wraps back to page 0."""
+        plugin = _make_plugin(sample_manifest, sample_config)
+        # 3 events, 1 row per page → 3 pages; force to last page
+        plugin._cycle_page = 2
+        plugin._cycle_last_advance = datetime.now()
+
+        with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        assert result.data["current_page"] == 3
+        assert "London" in result.data["row_1"]
+
+    def test_no_events_returns_empty_row(self, sample_manifest, sample_config):
+        """No events → row_1 is empty string."""
+        plugin = _make_plugin(sample_manifest, sample_config)
+        with patch("requests.get", return_value=_mock_get(ICS_OLD_EVENT)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        assert result.data["row_1"] == ""
+        assert result.data["total_pages"] == 1
 
 
 class TestDeparturesPluginInternals:

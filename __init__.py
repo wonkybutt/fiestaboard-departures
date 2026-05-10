@@ -2,9 +2,11 @@
 
 Displays upcoming calendar events from an iCalendar feed in a departures-board style.
 Each event row shows the event name, FSP status indicators, and a day/hour countdown.
+Supports cycling through all events N rows at a time on a configurable interval.
 """
 
 import logging
+import math
 from datetime import date, datetime, time, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -18,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 _TRUTHY = {"yes", "true", "1"}
 
-# 2026-05-09: Vestaboard color tile markers for FLIGHT indicator
-_TILE_GREEN = "{66}"  # valid flight time present
-_TILE_RED = "{63}"    # missing or invalid flight time
+# 2026-05-09: Vestaboard color tile markers for FSP indicators
+_TILE_GREEN = "{66}"  # confirmed / present
+_TILE_RED = "{63}"    # missing or invalid
 
 
 def _normalize_url(url: str) -> str:
@@ -32,30 +34,82 @@ def _normalize_url(url: str) -> str:
     return url
 
 
+def _build_row(event: Dict[str, Any], tz: ZoneInfo, now_dt: datetime) -> str:
+    """Build a single 22-tile display row for an event.
+
+    Normal format:   {name:<14} {f_tile}{s_tile}{p_tile}{days:>4}  (22 tiles)
+    Departed format: {name:<13} DEPARTED                            (22 tiles, no FSP)
+    Color markers count as 1 tile but are 4 characters in string length.
+    """
+    days_str = _format_countdown(event, tz, now_dt)
+    # 2026-05-09: departed events show NAME DEPARTED with no FSP tiles
+    if days_str == "DPTD":
+        name = event["name"][:13]
+        return f"{name:<13} DEPARTED"
+    f_char = _TILE_GREEN if event["flight_time"] is not None else _TILE_RED
+    s_char = _TILE_GREEN if event["stay"] else _TILE_RED
+    p_char = _TILE_GREEN if event["paid"] else _TILE_RED
+    name = event["name"][:14]
+    # 2026-05-09: name expanded to 14, FSP shifted right, days right-aligned to 4 tiles
+    return f"{name:<14} {f_char}{s_char}{p_char}{days_str:>4}"
+
+
+def _format_countdown(event: Dict[str, Any], tz: ZoneInfo, now_dt: datetime) -> str:
+    """Return the countdown string for an event.
+
+    If the event has a parsed flight time, uses that datetime for hours
+    countdown (< 24h) or days. Without a flight time, uses whole days only.
+    """
+    flight_time = event["flight_time"]
+    if flight_time is not None:
+        event_datetime = datetime.combine(
+            event["date"], flight_time
+        ).replace(tzinfo=tz)
+        delta_seconds = (event_datetime - now_dt).total_seconds()
+        if delta_seconds <= 0:
+            return "DPTD"
+        elif delta_seconds < 86400:
+            return f"{int(delta_seconds / 3600)}H"
+        else:
+            return f"{int(delta_seconds / 86400)}D"
+    else:
+        days_delta = event["days_delta"]
+        return "DPTD" if days_delta <= 0 else f"{days_delta}D"
+
+
 class DeparturesPlugin(PluginBase):
     """Departures-board display of upcoming iCalendar events.
 
-    Each event shows its name, FSP status indicators, and a countdown.
-    FLIGHT accepts a 24h time (HHMM or HH:MM); a green tile indicates a parsed
-    time, red indicates missing or invalid. Events beyond lookback_days in the
-    past are hidden; all future events are tracked without a cap.
+    Each event shows its name, FSP color tiles, and a countdown.
+    FLIGHT accepts a 24h time (HHMM or HH:MM); green tile = valid time,
+    red tile = missing or invalid. STAY and PAID show green/red tiles.
+
+    Events beyond lookback_days in the past are hidden. All future events
+    are tracked. The display cycles through events display_rows at a time,
+    advancing every cycle_seconds seconds.
     """
+
+    def __init__(self, manifest: Dict[str, Any]) -> None:
+        super().__init__(manifest)
+        # 2026-05-09: cycling state — persists across fetch calls in memory
+        self._cycle_page: int = 0
+        self._cycle_last_advance: Optional[datetime] = None
 
     @property
     def plugin_id(self) -> str:
         return "departures"
 
     def fetch_data(self) -> PluginResult:
-        """Fetch and parse the ICS feed, returning per-event countdown variables."""
+        """Fetch and parse the ICS feed, returning per-event and cycling row variables."""
         try:
             calendar_url = self.config.get("calendar_url", "")
             if not calendar_url:
                 return PluginResult(available=False, error="Calendar URL not configured")
 
             calendar_url = _normalize_url(calendar_url)
-            # 2026-05-09: removed max_events cap — all future events are tracked
-            # 2026-05-09: lookback_days replaces hardcoded 3-day past cutoff
             lookback_days = int(self.config.get("lookback_days", 3))
+            display_rows = max(1, int(self.config.get("display_rows", 1)))
+            cycle_seconds = max(30, int(self.config.get("cycle_seconds", 300)))
             timezone_str = self.config.get("timezone", "UTC")
 
             try:
@@ -102,7 +156,6 @@ class DeparturesPlugin(PluginBase):
                 event_date = event_dt.astimezone(tz).date()
                 days_delta = (event_date - today).days
 
-                # Exclude events beyond the configured lookback window
                 if days_delta < -lookback_days:
                     continue
 
@@ -122,23 +175,49 @@ class DeparturesPlugin(PluginBase):
             raw_events.sort(key=lambda e: e["date"])
             events = raw_events
 
+            # -- Per-event variables (all events, no cap) --
             data: Dict[str, Any] = {"event_count": len(events)}
             for i, event in enumerate(events):
-                days_str = self._format_countdown(event, tz, now_dt)
-                f_char = _TILE_GREEN if event["flight_time"] is not None else _TILE_RED
-                s_char = "S" if event["stay"] else "-"
-                p_char = "P" if event["paid"] else "-"
+                days_str = _format_countdown(event, tz, now_dt)
                 flight_time_str = (
                     event["flight_time"].strftime("%H:%M")
                     if event["flight_time"] is not None
                     else ""
                 )
-                data[f"event_{i}_name"] = event["name"][:12]
+                data[f"event_{i}_name"] = event["name"][:14]
                 data[f"event_{i}_days"] = days_str
-                data[f"event_{i}_f_char"] = f_char
+                data[f"event_{i}_f_char"] = _TILE_GREEN if event["flight_time"] is not None else _TILE_RED
                 data[f"event_{i}_flight_time"] = flight_time_str
-                data[f"event_{i}_stay"] = "true" if event["stay"] else "false"
-                data[f"event_{i}_paid"] = "true" if event["paid"] else "false"
+                data[f"event_{i}_stay"] = _TILE_GREEN if event["stay"] else _TILE_RED
+                data[f"event_{i}_paid"] = _TILE_GREEN if event["paid"] else _TILE_RED
+
+            # -- Cycling row variables --
+            # 2026-05-09: advance page when cycle_seconds has elapsed
+            total_pages = max(1, math.ceil(len(events) / display_rows)) if events else 1
+            wall_now = datetime.now()
+
+            if self._cycle_last_advance is None:
+                self._cycle_last_advance = wall_now
+                self._cycle_page = 0
+            elif (wall_now - self._cycle_last_advance).total_seconds() >= cycle_seconds:
+                self._cycle_page = (self._cycle_page + 1) % total_pages
+                self._cycle_last_advance = wall_now
+
+            # Clamp page in case event count shrank since last fetch
+            self._cycle_page = self._cycle_page % total_pages
+
+            start_idx = self._cycle_page * display_rows
+            page_events = events[start_idx:start_idx + display_rows]
+
+            data["current_page"] = self._cycle_page + 1
+            data["total_pages"] = total_pages
+
+            for slot in range(display_rows):
+                key = f"row_{slot + 1}"
+                if slot < len(page_events):
+                    data[key] = _build_row(page_events[slot], tz, now_dt)
+                else:
+                    data[key] = ""
 
             return PluginResult(
                 available=True,
@@ -157,30 +236,6 @@ class DeparturesPlugin(PluginBase):
     def _get_now(self, tz: ZoneInfo) -> datetime:
         """Return the current datetime in the given timezone."""
         return datetime.now(tz)
-
-    def _format_countdown(
-        self, event: Dict[str, Any], tz: ZoneInfo, now_dt: datetime
-    ) -> str:
-        """Return the countdown string for an event.
-
-        If the event has a parsed flight time, uses that datetime for hours
-        countdown (< 24h) or days. Without a flight time, uses whole days only.
-        """
-        flight_time = event["flight_time"]
-        if flight_time is not None:
-            event_datetime = datetime.combine(
-                event["date"], flight_time
-            ).replace(tzinfo=tz)
-            delta_seconds = (event_datetime - now_dt).total_seconds()
-            if delta_seconds <= 0:
-                return "DPRTD"
-            elif delta_seconds < 86400:
-                return f"{int(delta_seconds / 3600)}H"
-            else:
-                return f"{int(delta_seconds / 86400)}D"
-        else:
-            days_delta = event["days_delta"]
-            return "DPRTD" if days_delta <= 0 else f"{days_delta}D"
 
     def _normalize_dtstart(self, dtstart: Any) -> Optional[datetime]:
         """Convert a DTSTART property value to a timezone-aware UTC datetime."""
@@ -242,26 +297,15 @@ class DeparturesPlugin(PluginBase):
         tz: ZoneInfo,
         now_dt: datetime,
     ) -> List[str]:
-        """Format events as board rows in departures-board style.
+        """Format the first 6 events as board rows for formatted_lines output.
 
-        Row format (22 tiles): {name:<12} {f_char}{s_char}{p_char} {days}
-        Color tile markers ({63}, {66}) count as 1 tile but inflate string
-        length by 3 characters, so string length is not used for truncation.
+        Row format (22 tiles): {name:<12} {f_tile}{s_tile}{p_tile} {days}
+        Color markers count as 1 tile but inflate string length by 3 characters.
         """
-        lines: List[str] = []
-        for event in events:
-            days_str = self._format_countdown(event, tz, now_dt)
-            f_char = _TILE_GREEN if event["flight_time"] is not None else _TILE_RED
-            s_char = "S" if event["stay"] else "-"
-            p_char = "P" if event["paid"] else "-"
-            name = event["name"][:12]
-            line = f"{name:<12} {f_char}{s_char}{p_char} {days_str}"
-            lines.append(line)
-
+        lines = [_build_row(e, tz, now_dt) for e in events[:6]]
         while len(lines) < 6:
             lines.append("")
-
-        return lines[:6]
+        return lines
 
 
 Plugin = DeparturesPlugin

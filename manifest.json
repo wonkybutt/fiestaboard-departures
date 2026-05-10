@@ -16,6 +16,21 @@
         "description": "Public or private .ics feed URL. Supports https:// and webcal:// formats.",
         "ui:widget": "password"
       },
+      "display_rows": {
+        "type": "integer",
+        "title": "Display Rows",
+        "description": "Number of events to show per page (1–6). The display cycles through all events this many at a time.",
+        "default": 1,
+        "minimum": 1,
+        "maximum": 6
+      },
+      "cycle_seconds": {
+        "type": "integer",
+        "title": "Cycle events (seconds)",
+        "description": "How long each page of events is shown before advancing to the next.",
+        "default": 300,
+        "minimum": 30
+      },
       "lookback_days": {
         "type": "integer",
         "title": "Lookback Days",
@@ -32,7 +47,7 @@
       },
       "refresh_seconds": {
         "type": "integer",
-        "title": "Refresh Interval (seconds)",
+        "title": "Calendar refresh (seconds)",
         "description": "How often to re-fetch the calendar feed.",
         "default": 300,
         "minimum": 60
@@ -41,7 +56,87 @@
     "required": ["calendar_url"]
   },
   "variables": {
-    "auto_discover": true
+    "auto_discover": true,
+    "groups": {
+      "formatted": {
+        "label": "Formatted Rows"
+      },
+      "individual": {
+        "label": "Individual Events"
+      }
+    },
+    "simple": {
+      "row_1": {
+        "description": "Pre-composed 22-tile display row for the first event on the current page. Use row_2, row_3, etc. for additional rows per page.",
+        "type": "string",
+        "max_length": 22,
+        "group": "formatted",
+        "example": "Hawaii Trip    {66}{66}{66} 11D"
+      },
+      "current_page": {
+        "description": "Current page number in the cycle (1-based).",
+        "type": "number",
+        "max_length": 2,
+        "group": "formatted",
+        "example": "1"
+      },
+      "total_pages": {
+        "description": "Total number of pages based on event count and display_rows setting.",
+        "type": "number",
+        "max_length": 2,
+        "group": "formatted",
+        "example": "3"
+      },
+      "event_count": {
+        "description": "Total number of upcoming events tracked.",
+        "type": "number",
+        "max_length": 2,
+        "group": "individual",
+        "example": "6"
+      },
+      "event_0_name": {
+        "description": "Event name (up to 14 characters). Replace 0 with the event index.",
+        "type": "string",
+        "max_length": 14,
+        "group": "individual",
+        "example": "Hawaii Trip"
+      },
+      "event_0_days": {
+        "description": "Countdown string: NND for days, NNH for hours (flight time required), DPTD when past.",
+        "type": "string",
+        "max_length": 4,
+        "group": "individual",
+        "example": "11D"
+      },
+      "event_0_f_char": {
+        "description": "FLIGHT indicator: green tile when a valid 24h time is set, red tile when missing or invalid.",
+        "type": "string",
+        "max_length": 1,
+        "group": "individual",
+        "example": "{66}"
+      },
+      "event_0_flight_time": {
+        "description": "Parsed flight time in HH:MM format, or empty string if not set.",
+        "type": "string",
+        "max_length": 5,
+        "group": "individual",
+        "example": "10:18"
+      },
+      "event_0_stay": {
+        "description": "STAY indicator: green tile if STAY:yes, red tile if not set.",
+        "type": "string",
+        "max_length": 1,
+        "group": "individual",
+        "example": "{66}"
+      },
+      "event_0_paid": {
+        "description": "PAID indicator: green tile if PAID:yes, red tile if not set.",
+        "type": "string",
+        "max_length": 1,
+        "group": "individual",
+        "example": "{66}"
+      }
+    }
   },
   "screenshots": [
     {
