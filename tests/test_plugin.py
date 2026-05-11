@@ -17,7 +17,6 @@ NOW_DT = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)  # noon UTC
 # ICS fixture strings
 # ---------------------------------------------------------------------------
 
-# 2026-05-09: updated FLIGHT values from boolean to 24h time format
 ICS_3_EVENTS = """\
 BEGIN:VCALENDAR
 VERSION:2.0
@@ -129,7 +128,6 @@ DESCRIPTION:STAY:no PAID:no
 END:VEVENT
 END:VCALENDAR"""
 
-# Event starting tomorrow at 08:00 — used for hours countdown tests
 ICS_TOMORROW_FLIGHT = """\
 BEGIN:VCALENDAR
 VERSION:2.0
@@ -141,7 +139,6 @@ DESCRIPTION:FLIGHT:0800 STAY:yes PAID:yes
 END:VEVENT
 END:VCALENDAR"""
 
-# Event later today — used for hours countdown (< 24h with flight time)
 ICS_HOURS_AWAY = """\
 BEGIN:VCALENDAR
 VERSION:2.0
@@ -210,34 +207,35 @@ class TestDeparturesPlugin:
         assert result.data["event_count"] == 3
 
     def test_successful_fetch_variable_keys(self, sample_manifest, sample_config):
+        """Row variables are published; per-event variables are not."""
         plugin = _make_plugin(sample_manifest, sample_config)
         with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
         data = result.data
+        assert "row_1" in data
+        assert "current_page" in data
+        assert "total_pages" in data
         for i in range(3):
-            assert f"event_{i}_name" in data
-            assert f"event_{i}_days" in data
-            assert f"event_{i}_f_char" in data
-            assert f"event_{i}_flight_time" in data
-            assert f"event_{i}_stay" in data
-            assert f"event_{i}_paid" in data
+            assert f"event_{i}_name" not in data
+            assert f"event_{i}_days" not in data
 
     def test_successful_fetch_day_counts(self, sample_manifest, sample_config):
-        """Hawaii=May20 (+11D), Austin=Jun1 (+23D), London=Jun15 (+37D) from May9."""
+        """Hawaii=May20 (+10D), Austin=Jun1 (+23D), London=Jun15 (+37D) from May9 noon."""
         plugin = _make_plugin(sample_manifest, sample_config)
         with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
+        lines = result.formatted_lines
         # Hawaii has FLIGHT:1018 — countdown is time-based from noon UTC May 9
         # May 20 10:18 UTC minus May 9 12:00 UTC = 10 days 22h18m → 10D
-        assert result.data["event_0_days"] == "10D"
+        assert "10D" in lines[0]
         # Austin has no flight time — whole days: May9→Jun1 = 23D
-        assert result.data["event_1_days"] == "23D"
+        assert "23D" in lines[1]
         # London has FLIGHT:2033 — time-based: May9 12:00 to Jun15 20:33 = 37D
-        assert result.data["event_2_days"] == "37D"
+        assert "37D" in lines[2]
 
     def test_events_sorted_chronologically(self, sample_manifest, sample_config):
         """Events should appear in date order regardless of ICS order."""
@@ -260,46 +258,35 @@ END:VCALENDAR"""
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        assert result.data["event_0_name"] == "Earlier"
-        assert result.data["event_1_name"] == "Later"
+        assert "Earlier" in result.formatted_lines[0]
+        assert "Later" in result.formatted_lines[1]
 
     # ------------------------------------------------------------------
-    # FLIGHT time parsing → f_char color
+    # First indicator — time parsing → green/red tile in row
     # ------------------------------------------------------------------
 
-    def test_flight_time_hhmm_format_green(self, sample_manifest, sample_config):
-        """FLIGHT:1018 → parsed time → green tile."""
+    def test_valid_flight_time_green_in_row(self, sample_manifest, sample_config):
+        """FLIGHT:1018 → green tile in row_1."""
         plugin = _make_plugin(sample_manifest, sample_config)
         with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        assert result.data["event_0_f_char"] == _TILE_GREEN
-        assert result.data["event_0_flight_time"] == "10:18"
+        assert _TILE_GREEN in result.data["row_1"]
 
-    def test_flight_time_colon_format_green(self, sample_manifest, sample_config):
-        """FLIGHT:14:30 (colon format) → parsed time → green tile."""
+    def test_missing_flight_time_red_in_row(self, sample_manifest, sample_config):
+        """No FLIGHT field → red tile in row for that event."""
         plugin = _make_plugin(sample_manifest, sample_config)
-        with patch("requests.get", return_value=_mock_get(ICS_FIVE_EVENTS)):
-            with _patch_time()[0], _patch_time()[1]:
-                result = plugin.fetch_data()
-
-        # Event C has FLIGHT:14:30
-        assert result.data["event_2_f_char"] == _TILE_GREEN
-        assert result.data["event_2_flight_time"] == "14:30"
-
-    def test_flight_time_absent_red(self, sample_manifest, sample_config):
-        """No FLIGHT field → red tile."""
-        plugin = _make_plugin(sample_manifest, sample_config)
+        # Austin (index 1) has no FLIGHT — force display_rows=2 to get row_2
+        config = {**sample_config, "display_rows": 2}
+        plugin = _make_plugin(sample_manifest, config)
         with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        # Austin has no FLIGHT field
-        assert result.data["event_1_f_char"] == _TILE_RED
-        assert result.data["event_1_flight_time"] == ""
+        assert _TILE_RED in result.data["row_2"]
 
-    def test_flight_time_invalid_value_red(self, sample_manifest, sample_config):
+    def test_invalid_flight_time_red_in_row(self, sample_manifest, sample_config):
         """FLIGHT:yes (non-time value) → red tile."""
         ics = """\
 BEGIN:VCALENDAR
@@ -315,29 +302,242 @@ END:VCALENDAR"""
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        assert result.data["event_0_f_char"] == _TILE_RED
-        assert result.data["event_0_flight_time"] == ""
+        assert _TILE_RED in result.data["row_1"]
 
-    def test_flight_time_unparseable_red(self, sample_manifest, sample_config):
-        """FLIGHT:9999 (invalid hour) → red tile."""
+    # ------------------------------------------------------------------
+    # Boolean indicators — denylist logic
+    # ------------------------------------------------------------------
+
+    def test_boolean_indicator_truthy_values_green(self, sample_manifest):
+        """Any value not in the falsy set → green tile."""
+        for truthy_val in ["yes", "true", "1", "booked", "partial", "confirmed", "YES"]:
+            ics = f"""\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:Trip
+DTSTART;VALUE=DATE:20260520
+DESCRIPTION:STAY:{truthy_val}
+END:VEVENT
+END:VCALENDAR"""
+            config = {
+                "calendar_url": "https://example.com/calendar.ics",
+                "timezone": "UTC",
+                "indicator_1": "FLIGHT",
+                "indicator_2": "STAY",
+            }
+            plugin = _make_plugin(sample_manifest, config)
+            with patch("requests.get", return_value=_mock_get(ics)):
+                with _patch_time()[0], _patch_time()[1]:
+                    result = plugin.fetch_data()
+
+            row = result.data["row_1"]
+            assert _TILE_GREEN in row, f"Expected green for STAY:{truthy_val}, got: {row!r}"
+
+    def test_boolean_indicator_falsy_values_red(self, sample_manifest):
+        """no/false/0/blank → red tile."""
+        for falsy_val in ["no", "false", "0", "NO", "FALSE"]:
+            ics = f"""\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:Trip
+DTSTART;VALUE=DATE:20260520
+DESCRIPTION:STAY:{falsy_val}
+END:VEVENT
+END:VCALENDAR"""
+            config = {
+                "calendar_url": "https://example.com/calendar.ics",
+                "timezone": "UTC",
+                "indicator_1": "FLIGHT",
+                "indicator_2": "STAY",
+            }
+            plugin = _make_plugin(sample_manifest, config)
+            with patch("requests.get", return_value=_mock_get(ics)):
+                with _patch_time()[0], _patch_time()[1]:
+                    result = plugin.fetch_data()
+
+            row = result.data["row_1"]
+            assert _TILE_RED in row, f"Expected red for STAY:{falsy_val}, got: {row!r}"
+
+    def test_missing_boolean_indicator_defaults_red(self, sample_manifest):
+        """Missing indicator key → red tile."""
         ics = """\
 BEGIN:VCALENDAR
 VERSION:2.0
 BEGIN:VEVENT
-SUMMARY:Bad Time
+SUMMARY:Trip
 DTSTART;VALUE=DATE:20260520
-DESCRIPTION:FLIGHT:9999 STAY:no PAID:no
+DESCRIPTION:FLIGHT:1000
 END:VEVENT
 END:VCALENDAR"""
-        plugin = _make_plugin(sample_manifest, sample_config)
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "indicator_1": "FLIGHT",
+            "indicator_2": "STAY",
+            "indicator_3": "PAID",
+        }
+        plugin = _make_plugin(sample_manifest, config)
         with patch("requests.get", return_value=_mock_get(ics)):
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        assert result.data["event_0_f_char"] == _TILE_RED
+        # STAY and PAID are missing → red tiles
+        row = result.data["row_1"]
+        assert _TILE_RED in row
 
     # ------------------------------------------------------------------
-    # Hours countdown (flight time present, < 24h away)
+    # Configurable indicator keys
+    # ------------------------------------------------------------------
+
+    def test_custom_indicator_keys_parsed(self, sample_manifest):
+        """Custom key names (HOTEL, TICKETS) are parsed from description."""
+        ics = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:Festival
+DTSTART;VALUE=DATE:20260520
+DESCRIPTION:DEPART:1400 HOTEL:booked TICKETS:yes
+END:VEVENT
+END:VCALENDAR"""
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "indicator_1": "DEPART",
+            "indicator_2": "HOTEL",
+            "indicator_3": "TICKETS",
+        }
+        plugin = _make_plugin(sample_manifest, config)
+        with patch("requests.get", return_value=_mock_get(ics)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        row = result.data["row_1"]
+        # DEPART:1400 → valid time → green; HOTEL:booked → green; TICKETS:yes → green
+        assert row.count(_TILE_GREEN) == 3
+
+    def test_default_indicators_when_not_configured(self, sample_manifest, sample_config):
+        """When indicators not in config, defaults to FLIGHT/STAY/PAID."""
+        plugin = _make_plugin(sample_manifest, sample_config)
+        with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        # Hawaii has FLIGHT:1018 STAY:yes PAID:yes → all green
+        row = result.data["row_1"]
+        assert row.count(_TILE_GREEN) == 3
+
+    def test_only_indicator_1_when_2_and_3_empty(self, sample_manifest):
+        """indicator_2 and indicator_3 left empty → only 1 indicator shown."""
+        ics = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:Solo
+DTSTART;VALUE=DATE:20260520
+DESCRIPTION:FLIGHT:1000
+END:VEVENT
+END:VCALENDAR"""
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "indicator_1": "FLIGHT",
+            "indicator_2": "",
+            "indicator_3": "",
+        }
+        plugin = _make_plugin(sample_manifest, config)
+        with patch("requests.get", return_value=_mock_get(ics)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        row = result.data["row_1"]
+        # 1 indicator → name width 16; only one tile
+        assert row.count(_TILE_GREEN) + row.count(_TILE_RED) == 1
+
+    # ------------------------------------------------------------------
+    # Row layout shifts with indicator count
+    # ------------------------------------------------------------------
+
+    def test_layout_3_indicators_name_14(self, sample_manifest):
+        """3 indicators → name field is 14 tiles wide."""
+        ics = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:A Very Long Name Here
+DTSTART;VALUE=DATE:20260520
+DESCRIPTION:FLIGHT:1000 STAY:yes PAID:yes
+END:VEVENT
+END:VCALENDAR"""
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "indicator_1": "FLIGHT",
+            "indicator_2": "STAY",
+            "indicator_3": "PAID",
+        }
+        plugin = _make_plugin(sample_manifest, config)
+        with patch("requests.get", return_value=_mock_get(ics)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        row = result.data["row_1"]
+        # Row: {name:<14} {i1}{i2}{i3}{days:>4} = 14+1+9+4 = 28 chars = 22 tiles
+        assert row.startswith("A Very Long Na")
+
+    def test_layout_2_indicators_name_15(self, sample_manifest):
+        """2 indicators → name field is 15 tiles wide."""
+        ics = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:A Very Long Name Here
+DTSTART;VALUE=DATE:20260520
+DESCRIPTION:FLIGHT:1000 STAY:yes
+END:VEVENT
+END:VCALENDAR"""
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "indicator_1": "FLIGHT",
+            "indicator_2": "STAY",
+        }
+        plugin = _make_plugin(sample_manifest, config)
+        with patch("requests.get", return_value=_mock_get(ics)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        row = result.data["row_1"]
+        assert row.startswith("A Very Long Nam")
+
+    def test_layout_1_indicator_name_16(self, sample_manifest):
+        """1 indicator → name field is 16 tiles wide."""
+        ics = """\
+BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+SUMMARY:A Very Long Name Here
+DTSTART;VALUE=DATE:20260520
+DESCRIPTION:FLIGHT:1000
+END:VEVENT
+END:VCALENDAR"""
+        config = {
+            "calendar_url": "https://example.com/calendar.ics",
+            "timezone": "UTC",
+            "indicator_1": "FLIGHT",
+        }
+        plugin = _make_plugin(sample_manifest, config)
+        with patch("requests.get", return_value=_mock_get(ics)):
+            with _patch_time()[0], _patch_time()[1]:
+                result = plugin.fetch_data()
+
+        row = result.data["row_1"]
+        assert row.startswith("A Very Long Name")
+
+    # ------------------------------------------------------------------
+    # Hours countdown (first indicator time present, < 24h away)
     # ------------------------------------------------------------------
 
     def test_hours_countdown_with_flight_time(self, sample_manifest, sample_config):
@@ -350,13 +550,10 @@ END:VCALENDAR"""
                     result = plugin.fetch_data()
 
         assert result.available is True
-        assert result.data["event_0_days"] == "11H"
+        assert "11H" in result.data["row_1"]
 
     def test_whole_days_without_flight_time(self, sample_manifest, sample_config):
         """Event < 24h away by date but no flight time → shows whole days."""
-        plugin = _make_plugin(sample_manifest, sample_config)
-        now = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
-        # Austin is Jun 1, well past 24h — use a no-flight event for today+1
         ics = """\
 BEGIN:VCALENDAR
 VERSION:2.0
@@ -367,58 +564,24 @@ DESCRIPTION:STAY:no PAID:no
 END:VEVENT
 END:VCALENDAR"""
         plugin = _make_plugin(sample_manifest, sample_config)
+        now = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
         with patch("requests.get", return_value=_mock_get(ics)):
             with patch.object(DeparturesPlugin, "_get_today", return_value=TODAY):
                 with patch.object(DeparturesPlugin, "_get_now", return_value=now):
                     result = plugin.fetch_data()
 
-        # 1 day ahead, no flight time → "1D" not hours
-        assert result.data["event_0_days"] == "1D"
+        assert "1D" in result.data["row_1"]
 
     def test_flight_time_past_shows_dprtd(self, sample_manifest, sample_config):
         """Flight time in the past on event day → DPTD."""
         plugin = _make_plugin(sample_manifest, sample_config)
-        # Event today, FLIGHT:10:18, but now is 12:00 — flight already departed
         now = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
         with patch("requests.get", return_value=_mock_get(ICS_TODAY)):
             with patch.object(DeparturesPlugin, "_get_today", return_value=TODAY):
                 with patch.object(DeparturesPlugin, "_get_now", return_value=now):
                     result = plugin.fetch_data()
 
-        assert result.data["event_0_days"] == "DPTD"
-
-    # ------------------------------------------------------------------
-    # STAY and PAID flags (remain boolean)
-    # ------------------------------------------------------------------
-
-    def test_stay_paid_parsing(self, sample_manifest, sample_config):
-        """STAY:yes PAID:yes → green tile; absent → red tile."""
-        plugin = _make_plugin(sample_manifest, sample_config)
-        with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
-            with _patch_time()[0], _patch_time()[1]:
-                result = plugin.fetch_data()
-
-        # Hawaii: STAY:yes PAID:yes
-        assert result.data["event_0_stay"] == _TILE_GREEN
-        assert result.data["event_0_paid"] == _TILE_GREEN
-        # Austin: STAY:yes PAID:true
-        assert result.data["event_1_stay"] == _TILE_GREEN
-        assert result.data["event_1_paid"] == _TILE_GREEN
-        # London: STAY absent PAID:1
-        assert result.data["event_2_stay"] == _TILE_RED
-        assert result.data["event_2_paid"] == _TILE_GREEN
-
-    def test_missing_flags_default(self, sample_manifest, sample_config):
-        """No description → red tile for F, S, and P."""
-        plugin = _make_plugin(sample_manifest, sample_config)
-        with patch("requests.get", return_value=_mock_get(ICS_NO_FLAGS)):
-            with _patch_time()[0], _patch_time()[1]:
-                result = plugin.fetch_data()
-
-        assert result.available is True
-        assert result.data["event_0_f_char"] == _TILE_RED
-        assert result.data["event_0_stay"] == _TILE_RED
-        assert result.data["event_0_paid"] == _TILE_RED
+        assert "DEPARTED" in result.data["row_1"]
 
     # ------------------------------------------------------------------
     # Lookback days
@@ -434,6 +597,7 @@ END:VCALENDAR"""
 
         assert result.available is True
         assert result.data["event_count"] == 0
+        assert result.data["row_1"] == ""
 
     def test_event_within_lookback_included(self, sample_manifest):
         """May 6 is 3 days before May 9; within default lookback → shown as DPTD."""
@@ -443,8 +607,8 @@ END:VCALENDAR"""
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        assert result.data["event_count"] == 1
-        assert result.data["event_0_days"] == "DPTD"
+        assert result.data["total_pages"] == 1
+        assert "DEPARTED" in result.data["row_1"]
 
     def test_custom_lookback_days(self, sample_manifest):
         """lookback_days=6 → May 4 (5 days past) is included."""
@@ -458,7 +622,7 @@ END:VCALENDAR"""
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        assert result.data["event_count"] == 1
+        assert result.data["total_pages"] == 1
 
     def test_lookback_days_zero(self, sample_manifest):
         """lookback_days=0 → only today and future shown; yesterday excluded."""
@@ -486,14 +650,13 @@ END:VCALENDAR"""
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        assert result.data["event_count"] == 1
-        assert result.data["event_0_name"] == "Tomorrow"
+        assert result.data["total_pages"] == 1
+        assert "Tomorrow" in result.data["row_1"]
 
     # ------------------------------------------------------------------
     # All events tracked (no cap)
     # ------------------------------------------------------------------
 
-    # 2026-05-09: replaced max_events tests — all future events tracked without limit
     def test_all_events_tracked(self, sample_manifest):
         """All 5 future events should be returned with no cap."""
         config = {"calendar_url": "https://example.com/calendar.ics", "timezone": "UTC"}
@@ -503,8 +666,9 @@ END:VCALENDAR"""
                 result = plugin.fetch_data()
 
         assert result.available is True
-        assert result.data["event_count"] == 5
-        assert "event_4_name" in result.data
+        # 5 events, display_rows=1 → 5 pages; all 5 appear in formatted_lines
+        assert result.data["total_pages"] == 5
+        assert result.formatted_lines[4] != ""
 
     # ------------------------------------------------------------------
     # Network error
@@ -554,8 +718,8 @@ END:VCALENDAR"""
                 result = plugin.fetch_data()
 
         assert result.available is True
-        assert result.data["event_count"] == 2
-        assert result.data["event_0_name"] == "UTC Flight"
+        assert result.data["total_pages"] == 2
+        assert "UTC Flight" in result.data["row_1"]
 
     def test_timezone_naive_dtstart(self, sample_manifest, sample_config):
         """DTSTART:20260601T090000 (naive datetime) is treated as UTC."""
@@ -565,7 +729,7 @@ END:VCALENDAR"""
                 result = plugin.fetch_data()
 
         assert result.available is True
-        assert result.data["event_1_name"] == "Naive Flight"
+        assert "Naive Flight" in result.formatted_lines[1]
 
     # ------------------------------------------------------------------
     # webcal:// URL rewriting
@@ -582,7 +746,7 @@ END:VCALENDAR"""
         assert called_url.startswith("https://")
 
     # ------------------------------------------------------------------
-    # Missing calendar URL
+    # Missing calendar URL / invalid timezone
     # ------------------------------------------------------------------
 
     def test_missing_calendar_url_returns_unavailable(self, sample_manifest):
@@ -590,10 +754,6 @@ END:VCALENDAR"""
         result = plugin.fetch_data()
         assert result.available is False
         assert result.error is not None
-
-    # ------------------------------------------------------------------
-    # Invalid timezone
-    # ------------------------------------------------------------------
 
     def test_invalid_timezone_returns_unavailable(self, sample_manifest):
         config = {
@@ -646,7 +806,7 @@ END:VCALENDAR"""
         assert _TILE_RED in result.formatted_lines[1]
 
     def test_formatted_lines_dprtd_for_past_flight(self, sample_manifest, sample_config):
-        """Flight time already passed → DEPARTED row with no FSP tiles."""
+        """Flight time already passed → DEPARTED row with no indicator tiles."""
         plugin = _make_plugin(sample_manifest, sample_config)
         now = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
         with patch("requests.get", return_value=_mock_get(ICS_TODAY)):
@@ -660,7 +820,7 @@ END:VCALENDAR"""
         assert _TILE_RED not in row
 
     def test_departed_row_is_22_tiles(self, sample_manifest, sample_config):
-        """Departed row must be exactly 22 display tiles (color markers = 1 tile each)."""
+        """Departed row must be exactly 22 display tiles (no color markers)."""
         plugin = _make_plugin(sample_manifest, sample_config)
         now = datetime(2026, 5, 9, 12, 0, 0, tzinfo=timezone.utc)
         with patch("requests.get", return_value=_mock_get(ICS_TODAY)):
@@ -673,7 +833,7 @@ END:VCALENDAR"""
         assert len(row) == 22
 
     # ------------------------------------------------------------------
-    # Name truncation (now 14 chars)
+    # Name truncation
     # ------------------------------------------------------------------
 
     def test_name_truncated_to_14_chars(self, sample_manifest, sample_config):
@@ -691,13 +851,15 @@ END:VCALENDAR"""
             with _patch_time()[0], _patch_time()[1]:
                 result = plugin.fetch_data()
 
-        assert len(result.data["event_0_name"]) <= 14
+        # sample_config uses default 3 indicators → name width = 14
+        row = result.data["row_1"]
+        assert row.startswith("A Very Long Ev")
+        assert row[14] == " "
 
     # ------------------------------------------------------------------
     # Cycling row variables
     # ------------------------------------------------------------------
 
-    # 2026-05-09: cycling display tests
     def test_row_1_present_on_first_fetch(self, sample_manifest, sample_config):
         """First fetch always returns row_1."""
         plugin = _make_plugin(sample_manifest, sample_config)
@@ -743,7 +905,6 @@ END:VCALENDAR"""
         }
         plugin = _make_plugin(sample_manifest, config)
 
-        # First fetch — page 0
         with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
             with _patch_time()[0], _patch_time()[1]:
                 result1 = plugin.fetch_data()
@@ -751,7 +912,6 @@ END:VCALENDAR"""
         assert "Hawaii" in result1.data["row_1"]
         assert result1.data["current_page"] == 1
 
-        # Simulate 61 seconds elapsed by backdating _cycle_last_advance
         plugin._cycle_last_advance = datetime.now() - timedelta(seconds=61)
 
         with patch("requests.get", return_value=_mock_get(ICS_3_EVENTS)):
@@ -770,7 +930,6 @@ END:VCALENDAR"""
             "cycle_seconds": 30,
         }
         plugin = _make_plugin(sample_manifest, config)
-        # Force to page 1 (second page: event index 2 only)
         plugin._cycle_page = 1
         plugin._cycle_last_advance = datetime.now()
 
@@ -798,7 +957,6 @@ END:VCALENDAR"""
     def test_page_wraps_around(self, sample_manifest, sample_config):
         """After last page, cycling wraps back to page 0."""
         plugin = _make_plugin(sample_manifest, sample_config)
-        # 3 events, 1 row per page → 3 pages; force to last page
         plugin._cycle_page = 2
         plugin._cycle_last_advance = datetime.now()
 
@@ -845,38 +1003,60 @@ class TestDeparturesPluginInternals:
             assert plugin._parse_flight_time(val) is None, f"Expected None for {val!r}"
 
     # ------------------------------------------------------------------
-    # _parse_flags
+    # _parse_indicators
     # ------------------------------------------------------------------
 
-    def test_parse_flags_flight_time(self, sample_manifest):
+    def test_parse_indicators_first_is_time(self, sample_manifest):
+        """First indicator with valid time → time_value set, green tile."""
         plugin = DeparturesPlugin(sample_manifest)
-        flags = plugin._parse_flags("FLIGHT:1018 STAY:yes PAID:yes")
-        assert flags["flight_time"] == time(10, 18)
-        assert flags["stay"] is True
-        assert flags["paid"] is True
+        result = plugin._parse_indicators("FLIGHT:1018 STAY:yes PAID:yes", ["FLIGHT", "STAY", "PAID"])
+        assert result["time_value"] == time(10, 18)
+        assert result["indicator_tiles"][0] == _TILE_GREEN
 
-    def test_parse_flags_invalid_flight(self, sample_manifest):
+    def test_parse_indicators_first_invalid_time(self, sample_manifest):
+        """First indicator with unparseable value → time_value None, red tile."""
         plugin = DeparturesPlugin(sample_manifest)
-        flags = plugin._parse_flags("FLIGHT:yes STAY:no PAID:no")
-        assert flags["flight_time"] is None
+        result = plugin._parse_indicators("FLIGHT:yes STAY:yes PAID:yes", ["FLIGHT", "STAY", "PAID"])
+        assert result["time_value"] is None
+        assert result["indicator_tiles"][0] == _TILE_RED
 
-    def test_parse_flags_empty_description(self, sample_manifest):
+    def test_parse_indicators_first_missing(self, sample_manifest):
+        """First indicator absent → time_value None, red tile."""
         plugin = DeparturesPlugin(sample_manifest)
-        flags = plugin._parse_flags("")
-        assert flags == {"flight_time": None, "stay": False, "paid": False}
+        result = plugin._parse_indicators("STAY:yes PAID:yes", ["FLIGHT", "STAY", "PAID"])
+        assert result["time_value"] is None
+        assert result["indicator_tiles"][0] == _TILE_RED
 
-    def test_parse_flags_stay_paid_truthy_forms(self, sample_manifest):
+    def test_parse_indicators_boolean_denylist(self, sample_manifest):
+        """Boolean indicators: no/false/0/blank → red; anything else → green."""
         plugin = DeparturesPlugin(sample_manifest)
-        for val in ["yes", "true", "1", "YES", "TRUE"]:
-            flags = plugin._parse_flags(f"STAY:{val} PAID:{val}")
-            assert flags["stay"] is True, val
-            assert flags["paid"] is True, val
+        for falsy in ["no", "false", "0", "NO", "FALSE"]:
+            result = plugin._parse_indicators(f"STAY:{falsy}", ["FLIGHT", "STAY"])
+            assert result["indicator_tiles"][1] == _TILE_RED, f"Expected red for STAY:{falsy}"
 
-    def test_parse_flags_stay_paid_falsy(self, sample_manifest):
+        for truthy in ["yes", "true", "1", "booked", "partial"]:
+            result = plugin._parse_indicators(f"STAY:{truthy}", ["FLIGHT", "STAY"])
+            assert result["indicator_tiles"][1] == _TILE_GREEN, f"Expected green for STAY:{truthy}"
+
+    def test_parse_indicators_missing_boolean_is_red(self, sample_manifest):
+        """Missing boolean indicator key → red tile."""
         plugin = DeparturesPlugin(sample_manifest)
-        flags = plugin._parse_flags("STAY:no PAID:false")
-        assert flags["stay"] is False
-        assert flags["paid"] is False
+        result = plugin._parse_indicators("FLIGHT:1000", ["FLIGHT", "STAY"])
+        assert result["indicator_tiles"][1] == _TILE_RED
+
+    def test_parse_indicators_custom_keys(self, sample_manifest):
+        """Custom key names are matched case-insensitively."""
+        plugin = DeparturesPlugin(sample_manifest)
+        result = plugin._parse_indicators("DEPART:1400 HOTEL:booked", ["DEPART", "HOTEL"])
+        assert result["time_value"] == time(14, 0)
+        assert result["indicator_tiles"] == [_TILE_GREEN, _TILE_GREEN]
+
+    def test_parse_indicators_empty_description(self, sample_manifest):
+        """Empty description → all red, no time value."""
+        plugin = DeparturesPlugin(sample_manifest)
+        result = plugin._parse_indicators("", ["FLIGHT", "STAY", "PAID"])
+        assert result["time_value"] is None
+        assert result["indicator_tiles"] == [_TILE_RED, _TILE_RED, _TILE_RED]
 
     # ------------------------------------------------------------------
     # _normalize_dtstart

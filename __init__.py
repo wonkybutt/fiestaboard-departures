@@ -1,7 +1,7 @@
 """Departures plugin for FiestaBoard.
 
 Displays upcoming calendar events from an iCalendar feed in a departures-board style.
-Each event row shows the event name, FSP status indicators, and a day/hour countdown.
+Each event row shows the event name, Go/No-Go indicators, and a day/hour countdown.
 Supports cycling through all events N rows at a time on a configurable interval.
 """
 
@@ -18,11 +18,15 @@ from src.plugins.base import PluginBase, PluginResult
 
 logger = logging.getLogger(__name__)
 
-_TRUTHY = {"yes", "true", "1"}
+# 2026-05-10: boolean indicators use a denylist — anything not in _FALSY is true
+_FALSY = {"no", "false", "0"}
 
-# 2026-05-09: Vestaboard color tile markers for FSP indicators
-_TILE_GREEN = "{66}"  # confirmed / present
-_TILE_RED = "{63}"    # missing or invalid
+# 2026-05-09: Vestaboard color tile markers for Go/No-Go indicators
+_TILE_GREEN = "{66}"  # go / confirmed
+_TILE_RED = "{63}"    # no-go / missing or invalid
+
+# Default indicator keys
+_DEFAULT_INDICATORS = ["FLIGHT", "STAY", "PAID"]
 
 
 def _normalize_url(url: str) -> str:
@@ -34,36 +38,46 @@ def _normalize_url(url: str) -> str:
     return url
 
 
+def _is_falsy(val: str) -> bool:
+    """Return True if val represents a negative/empty value for a boolean indicator."""
+    return val.strip().lower() in _FALSY or val.strip() == ""
+
+
 def _build_row(event: Dict[str, Any], tz: ZoneInfo, now_dt: datetime) -> str:
     """Build a single 22-tile display row for an event.
 
-    Normal format:   {name:<14} {f_tile}{s_tile}{p_tile}{days:>4}  (22 tiles)
-    Departed format: {name:<13} DEPARTED                            (22 tiles, no FSP)
+    Name width scales with indicator count (n):
+      n=1: name 16 tiles — {name:<16} {i1}{days:>4}
+      n=2: name 15 tiles — {name:<15} {i1}{i2}{days:>4}
+      n=3: name 14 tiles — {name:<14} {i1}{i2}{i3}{days:>4}
+    Departed format: {name:<13} DEPARTED  (22 tiles, no indicators)
     Color markers count as 1 tile but are 4 characters in string length.
     """
     days_str = _format_countdown(event, tz, now_dt)
-    # 2026-05-09: departed events show NAME DEPARTED with no FSP tiles
+    # 2026-05-09: departed events show NAME DEPARTED with no indicator tiles
     if days_str == "DPTD":
         name = event["name"][:13]
         return f"{name:<13} DEPARTED"
-    f_char = _TILE_GREEN if event["flight_time"] is not None else _TILE_RED
-    s_char = _TILE_GREEN if event["stay"] else _TILE_RED
-    p_char = _TILE_GREEN if event["paid"] else _TILE_RED
-    name = event["name"][:14]
-    # 2026-05-09: name expanded to 14, FSP shifted right, days right-aligned to 4 tiles
-    return f"{name:<14} {f_char}{s_char}{p_char}{days_str:>4}"
+
+    tiles = event["indicator_tiles"]
+    n = len(tiles)
+    # 2026-05-10: name width = 17 - n (1→16, 2→15, 3→14)
+    name_width = 17 - n
+    name = event["name"][:name_width]
+    indicator_str = "".join(tiles)
+    return f"{name:<{name_width}} {indicator_str}{days_str:>4}"
 
 
 def _format_countdown(event: Dict[str, Any], tz: ZoneInfo, now_dt: datetime) -> str:
     """Return the countdown string for an event.
 
-    If the event has a parsed flight time, uses that datetime for hours
-    countdown (< 24h) or days. Without a flight time, uses whole days only.
+    If the event has a parsed time_value (from first indicator), uses that datetime
+    for hours countdown (< 24h) or days. Without a time value, uses whole days only.
     """
-    flight_time = event["flight_time"]
-    if flight_time is not None:
+    time_value = event["time_value"]
+    if time_value is not None:
         event_datetime = datetime.combine(
-            event["date"], flight_time
+            event["date"], time_value
         ).replace(tzinfo=tz)
         delta_seconds = (event_datetime - now_dt).total_seconds()
         if delta_seconds <= 0:
@@ -80,9 +94,10 @@ def _format_countdown(event: Dict[str, Any], tz: ZoneInfo, now_dt: datetime) -> 
 class DeparturesPlugin(PluginBase):
     """Departures-board display of upcoming iCalendar events.
 
-    Each event shows its name, FSP color tiles, and a countdown.
-    FLIGHT accepts a 24h time (HHMM or HH:MM); green tile = valid time,
-    red tile = missing or invalid. STAY and PAID show green/red tiles.
+    Each event shows its name, configurable Go/No-Go indicators, and a countdown.
+    The first indicator expects a 24h time value (HHMM or HH:MM) and drives the
+    hour countdown. Additional indicators use a denylist: any value other than
+    no/false/0/blank shows green. Missing indicators default to red.
 
     Events beyond lookback_days in the past are hidden. All future events
     are tracked. The display cycles through events display_rows at a time,
@@ -111,6 +126,22 @@ class DeparturesPlugin(PluginBase):
             display_rows = max(1, int(self.config.get("display_rows", 1)))
             cycle_seconds = max(30, int(self.config.get("cycle_seconds", 300)))
             timezone_str = self.config.get("timezone", "UTC")
+
+            # 2026-05-10: configurable Go/No-Go indicator keys (1–3 separate fields)
+            # If no indicator fields are present → use all defaults.
+            # If any indicator field is present → only include explicitly set (non-empty) ones.
+            _indicator_fields = ("indicator_1", "indicator_2", "indicator_3")
+            any_configured = any(f in self.config for f in _indicator_fields)
+            indicator_keys = []
+            for field, default in zip(_indicator_fields, _DEFAULT_INDICATORS):
+                if not any_configured:
+                    indicator_keys.append(default)
+                else:
+                    val = str(self.config.get(field, "")).strip().upper()
+                    if field == "indicator_1":
+                        indicator_keys.append(val if val else default)
+                    elif val:
+                        indicator_keys.append(val)
 
             try:
                 tz = ZoneInfo(timezone_str)
@@ -161,37 +192,21 @@ class DeparturesPlugin(PluginBase):
 
                 summary = str(component.get("SUMMARY", "")).strip()
                 description = str(component.get("DESCRIPTION", "")).strip()
-                flags = self._parse_flags(description)
+                parsed = self._parse_indicators(description, indicator_keys)
 
                 raw_events.append({
                     "date": event_date,
                     "days_delta": days_delta,
                     "name": summary,
-                    "flight_time": flags["flight_time"],
-                    "stay": flags["stay"],
-                    "paid": flags["paid"],
+                    "time_value": parsed["time_value"],
+                    "indicator_tiles": parsed["indicator_tiles"],
                 })
 
             raw_events.sort(key=lambda e: e["date"])
             events = raw_events
 
-            # -- Per-event variables (all events, no cap) --
-            data: Dict[str, Any] = {"event_count": len(events)}
-            for i, event in enumerate(events):
-                days_str = _format_countdown(event, tz, now_dt)
-                flight_time_str = (
-                    event["flight_time"].strftime("%H:%M")
-                    if event["flight_time"] is not None
-                    else ""
-                )
-                data[f"event_{i}_name"] = event["name"][:14]
-                data[f"event_{i}_days"] = days_str
-                data[f"event_{i}_f_char"] = _TILE_GREEN if event["flight_time"] is not None else _TILE_RED
-                data[f"event_{i}_flight_time"] = flight_time_str
-                data[f"event_{i}_stay"] = _TILE_GREEN if event["stay"] else _TILE_RED
-                data[f"event_{i}_paid"] = _TILE_GREEN if event["paid"] else _TILE_RED
-
             # -- Cycling row variables --
+            data: Dict[str, Any] = {"event_count": len(events)}
             # 2026-05-09: advance page when cycle_seconds has elapsed
             total_pages = max(1, math.ceil(len(events) / display_rows)) if events else 1
             wall_now = datetime.now()
@@ -271,25 +286,41 @@ class DeparturesPlugin(PluginBase):
             pass
         return None
 
-    def _parse_flags(self, description: str) -> Dict[str, Any]:
-        """Parse FSP flags from an event description.
+    def _parse_indicators(
+        self, description: str, indicator_keys: List[str]
+    ) -> Dict[str, Any]:
+        """Parse Go/No-Go indicators from an event description.
 
-        FLIGHT accepts a 24h time (HHMM or HH:MM); invalid values yield None.
-        STAY and PAID accept yes/true/1 (case-insensitive); missing defaults to False.
+        The first key expects a 24h time value (HHMM or HH:MM); green if valid,
+        red if missing or unparseable. Subsequent keys use a denylist: any value
+        other than no/false/0/blank is green; missing defaults to red.
+
+        Returns:
+            time_value: Optional[time] from the first indicator
+            indicator_tiles: List[str] of _TILE_GREEN/_TILE_RED, one per key
         """
-        flags: Dict[str, Any] = {"flight_time": None, "stay": False, "paid": False}
-        if not description:
-            return flags
+        # 2026-05-10: build lookup from description tokens
+        token_map: Dict[str, str] = {}
         for token in description.split():
-            if ":" not in token:
-                continue
-            key, _, val = token.partition(":")
-            key_lower = key.lower()
-            if key_lower == "flight":
-                flags["flight_time"] = self._parse_flight_time(val)
-            elif key_lower in ("stay", "paid"):
-                flags[key_lower] = val.lower() in _TRUTHY
-        return flags
+            if ":" in token:
+                k, _, v = token.partition(":")
+                token_map[k.upper()] = v
+
+        time_value: Optional[time] = None
+        indicator_tiles: List[str] = []
+
+        for idx, key in enumerate(indicator_keys):
+            val = token_map.get(key, "")
+            if idx == 0:
+                # First indicator: expects a 24h time
+                parsed_time = self._parse_flight_time(val) if val else None
+                time_value = parsed_time
+                indicator_tiles.append(_TILE_GREEN if parsed_time is not None else _TILE_RED)
+            else:
+                # Subsequent indicators: denylist logic
+                indicator_tiles.append(_TILE_RED if _is_falsy(val) else _TILE_GREEN)
+
+        return {"time_value": time_value, "indicator_tiles": indicator_tiles}
 
     def _format_display(
         self,
@@ -297,11 +328,7 @@ class DeparturesPlugin(PluginBase):
         tz: ZoneInfo,
         now_dt: datetime,
     ) -> List[str]:
-        """Format the first 6 events as board rows for formatted_lines output.
-
-        Row format (22 tiles): {name:<12} {f_tile}{s_tile}{p_tile} {days}
-        Color markers count as 1 tile but inflate string length by 3 characters.
-        """
+        """Format the first 6 events as board rows for formatted_lines output."""
         lines = [_build_row(e, tz, now_dt) for e in events[:6]]
         while len(lines) < 6:
             lines.append("")
