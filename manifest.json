@@ -1,8 +1,8 @@
 {
   "id": "departures",
   "name": "Departures",
-  "version": "1.0.0",
-  "description": "Departures-style board showing upcoming events from an iCalendar feed with per-event FLIGHT, STAY, and PAID status indicators.",
+  "version": "1.1.0",
+  "description": "Departures-style board showing upcoming events from an iCalendar feed with configurable Go/No-Go status indicators.",
   "author": "Adam",
   "icon": "calendar-clock",
   "category": "utility",
@@ -15,6 +15,24 @@
         "title": "iCalendar URL",
         "description": "Public or private .ics feed URL. Supports https:// and webcal:// formats.",
         "ui:widget": "password"
+      },
+      "indicator_1": {
+        "type": "string",
+        "title": "Go/No-Go Indicator 1 (Time)",
+        "description": "Key to look for in calendar event notes (e.g. FLIGHT). Must contain a 24-hour time value (e.g. FLIGHT:1045 or FLIGHT:10:45) — this drives the hour-by-hour countdown when departure is less than 24 hours away. Green tile when a valid time is set; red when missing or invalid.",
+        "default": "FLIGHT"
+      },
+      "indicator_2": {
+        "type": "string",
+        "title": "Go/No-Go Indicator 2",
+        "description": "Key to look for in calendar event notes (e.g. STAY). Any value other than no/false/0/blank shows green. Leave empty to hide this indicator.",
+        "default": "STAY"
+      },
+      "indicator_3": {
+        "type": "string",
+        "title": "Go/No-Go Indicator 3",
+        "description": "Key to look for in calendar event notes (e.g. PAID). Any value other than no/false/0/blank shows green. Leave empty to hide this indicator.",
+        "default": "PAID"
       },
       "display_rows": {
         "type": "integer",
@@ -60,9 +78,6 @@
     "groups": {
       "formatted": {
         "label": "Formatted Rows"
-      },
-      "individual": {
-        "label": "Individual Events"
       }
     },
     "simple": {
@@ -91,50 +106,8 @@
         "description": "Total number of upcoming events tracked.",
         "type": "number",
         "max_length": 2,
-        "group": "individual",
+        "group": "formatted",
         "example": "6"
-      },
-      "event_0_name": {
-        "description": "Event name (up to 14 characters). Replace 0 with the event index.",
-        "type": "string",
-        "max_length": 14,
-        "group": "individual",
-        "example": "Hawaii Trip"
-      },
-      "event_0_days": {
-        "description": "Countdown string: NND for days, NNH for hours (flight time required), DPTD when past.",
-        "type": "string",
-        "max_length": 4,
-        "group": "individual",
-        "example": "11D"
-      },
-      "event_0_f_char": {
-        "description": "FLIGHT indicator: green tile when a valid 24h time is set, red tile when missing or invalid.",
-        "type": "string",
-        "max_length": 1,
-        "group": "individual",
-        "example": "{66}"
-      },
-      "event_0_flight_time": {
-        "description": "Parsed flight time in HH:MM format, or empty string if not set.",
-        "type": "string",
-        "max_length": 5,
-        "group": "individual",
-        "example": "10:18"
-      },
-      "event_0_stay": {
-        "description": "STAY indicator: green tile if STAY:yes, red tile if not set.",
-        "type": "string",
-        "max_length": 1,
-        "group": "individual",
-        "example": "{66}"
-      },
-      "event_0_paid": {
-        "description": "PAID indicator: green tile if PAID:yes, red tile if not set.",
-        "type": "string",
-        "max_length": 1,
-        "group": "individual",
-        "example": "{66}"
       }
     }
   },
@@ -142,7 +115,7 @@
     {
       "src": "docs/board-display.png",
       "alt": "Departures displayed on a Vestaboard",
-      "caption": "Departures-board layout showing upcoming events with FLIGHT, STAY, and PAID indicators",
+      "caption": "Departures-board layout showing upcoming events with Go/No-Go indicators",
       "primary": true
     }
   ]
